@@ -159,6 +159,39 @@ def bboxes_resize(bbox_ref, bboxes, name=None):
         bboxes = bboxes / s
         return bboxes
 
+def polybox_resize(bbox_ref, bboxes, name=None):
+    """Resize bounding boxes based on a reference bounding box,
+    assuming that the latter is [0, 0, 1, 1] after transform. Useful for
+    updating a collection of boxes after cropping an image.
+    """
+    # Bboxes is dictionary.
+    if isinstance(bboxes, dict):
+        with tf.name_scope(name, 'bboxes_resize_dict'):
+            d_bboxes = {}
+            for c in bboxes.keys():
+                d_bboxes[c] = polybox_resize(bbox_ref, bboxes[c])
+            return d_bboxes
+
+    # Tensors inputs.
+    with tf.name_scope(name, 'polybox_resize'):
+        # Translate.
+        vx = tf.expand_dims([bbox_ref[1], bbox_ref[1], bbox_ref[1], bbox_ref[1]],1)
+        vy = tf.expand_dims([bbox_ref[0], bbox_ref[0], bbox_ref[0], bbox_ref[0]],1)
+        v = tf.concat([vx,vy],-1)
+        bboxes = bboxes - v
+        # Scale.
+        sy = tf.expand_dims([bbox_ref[2] - bbox_ref[0],
+                            bbox_ref[2] - bbox_ref[0],
+                            bbox_ref[2] - bbox_ref[0],
+                            bbox_ref[2] - bbox_ref[0]], 1)
+        sx = tf.expand_dims([bbox_ref[3] - bbox_ref[1],
+                            bbox_ref[3] - bbox_ref[1],
+                            bbox_ref[3] - bbox_ref[1],
+                            bbox_ref[3] - bbox_ref[1]], 1)
+        s = tf.concat([sx,sy],-1)
+        bboxes = bboxes / s
+        return bboxes
+
 
 def bboxes_nms(scores, bboxes, nms_threshold=0.5, keep_top_k=200, scope=None):
     """Apply non-maximum selection to bounding boxes. In comparison to TF
@@ -402,7 +435,7 @@ def bboxes_filter_center(labels, bboxes, margins=[0., 0., 0., 0.],
         return labels, bboxes
 
 
-def bboxes_filter_overlap(labels, bboxes, threshold=0.1,
+def bboxes_filter_overlap(labels, bboxes, cord, threshold=0.1,
                           scope=None):
     """Filter out bounding boxes based on overlap with reference
     box [0, 0, 1, 1].
@@ -410,7 +443,7 @@ def bboxes_filter_overlap(labels, bboxes, threshold=0.1,
     Return:
       labels, bboxes: Filtered elements.
     """
-    with tf.name_scope(scope, 'bboxes_filter', [labels, bboxes]):
+    with tf.name_scope(scope, 'bboxes_filter', [labels, bboxes,cord]):
         scores = bboxes_intersection(tf.constant([0, 0, 1, 1], bboxes.dtype),
                                      bboxes)
         mask = scores > threshold
@@ -418,7 +451,8 @@ def bboxes_filter_overlap(labels, bboxes, threshold=0.1,
         num = tf.reduce_sum(nmask)
         labels = tf.boolean_mask(labels, mask)
         bboxes = tf.boolean_mask(bboxes, mask)
-        return labels, bboxes,num 
+        cord   = tf.boolean_mask(cord,   mask)
+        return labels, bboxes, cord, num 
 
 
 def bboxes_filter_labels(labels, bboxes,

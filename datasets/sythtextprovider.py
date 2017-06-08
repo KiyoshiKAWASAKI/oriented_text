@@ -7,8 +7,6 @@ import os
 slim = tf.contrib.slim
 
 
-
-
 ITEMS_TO_DESCRIPTIONS = {
     'image': 'slim.tfexample_decoder.Image',
     'shape': 'shape',
@@ -42,6 +40,10 @@ def get_datasets(data_dir,file_pattern = '*.tfrecord'):
         'image/object/bbox/y1': tf.VarLenFeature(dtype=tf.float32),
         'image/object/bbox/y2': tf.VarLenFeature(dtype=tf.float32),
         'image/object/bbox/y3': tf.VarLenFeature(dtype=tf.float32),
+        'image/object/bbox/ymin': tf.VarLenFeature(dtype=tf.float32),
+        'image/object/bbox/xmin': tf.VarLenFeature(dtype=tf.float32),
+        'image/object/bbox/ymax': tf.VarLenFeature(dtype=tf.float32),
+        'image/object/bbox/xmax': tf.VarLenFeature(dtype=tf.float32),
         'image/format': tf.FixedLenFeature([], tf.string, default_value='jpeg'),
         'image/encoded': tf.FixedLenFeature([], tf.string, default_value=''),
         'image/name': tf.VarLenFeature(dtype = tf.string),
@@ -57,6 +59,8 @@ def get_datasets(data_dir,file_pattern = '*.tfrecord'):
                 ['x0', 'x1', 'x2', 'x3'], 'image/object/bbox/'),
         'object/cory': slim.tfexample_decoder.BoundingBox(
                 ['y0', 'y1', 'y2', 'y3'], 'image/object/bbox/'),
+        'object/bbox': slim.tfexample_decoder.BoundingBox(
+                ['ymin', 'xmin', 'ymax', 'xmax'], 'image/object/bbox/'),
         'object/label': slim.tfexample_decoder.Tensor('image/object/bbox/label'),
         #'imaname': slim.tfexample_decoder.Tensor('image/name'),
         #'objext/txt': slim.tfexample_decoder.Tensor('image/object/bbox/label_text'),

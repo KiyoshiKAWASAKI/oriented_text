@@ -26,7 +26,13 @@ NUMoffolder = 200
 ## So Transform tfrecord according to dir name
 
 
-def _convert_to_example(image_data, shape, charbb, label,imname):
+def _convert_to_example(image_data, shape, charbb, bbox, label,imname):
+	
+	nbbox = np.array(bbox)
+	ymin = list(nbbox[:, 0])
+	xmin = list(nbbox[:, 1])
+	ymax = list(nbbox[:, 2])
+	xmax = list(nbbox[:, 3])
 
 	#print 'shape: {}, height:{}, width:{}'.format(shape,shape[0],shape[1])
 	example = tf.train.Example(features=tf.train.Features(feature={
@@ -42,6 +48,10 @@ def _convert_to_example(image_data, shape, charbb, label,imname):
 			'image/object/bbox/y1': float_feature(charbb[1,1,:].tolist()),
 			'image/object/bbox/y2': float_feature(charbb[1,2,:].tolist()),
 			'image/object/bbox/y3': float_feature(charbb[1,3,:].tolist()),
+			'image/object/bbox/ymin': float_feature(ymin),
+			'image/object/bbox/xmin': float_feature(xmin),
+			'image/object/bbox/ymax': float_feature(ymax),
+			'image/object/bbox/xmax': float_feature(xmax),
 			'image/object/bbox/label': int64_feature(label),
 			'image/format': bytes_feature('jpeg'),
 			'image/encoded': bytes_feature(image_data),
@@ -54,11 +64,30 @@ def _processing_image(charbb, imname,coder):
 	image_data = tf.gfile.GFile(data_path+imname, 'r').read()
 	image = coder.decode_jpeg(image_data)
 	shape = image.shape
-	numofbox = charbb.shape[2]
-	#in the order [x1,x2,x3,x4,y1,y2,y3,y4]
+
+	if(len(charbb.shape) < 3 ):
+		numofbox = 1
+	else:
+		numofbox = charbb.shape[2]
+	bbox = []
+	[xmin, ymin]= np.min(charbb,1)
+	[xmax, ymax] = np.max(charbb,1)
+	xmin = np.maximum(xmin/shape[1], 0.0)
+	ymin = np.maximum(ymin/shape[0], 0.0)
+	xmax = np.minimum(xmax/shape[1], 1.0)
+	ymax = np.minimum(ymax/shape[0], 1.0)
+	if numofbox > 1:
+		bbox = [[ymin[i],xmin[i],ymax[i],xmax[i]] for i in range(numofbox)] 
+	if numofbox == 1:
+		bbox = [[ymin,xmin,ymax,xmax]]
+
+	charbb[0,:,:] = charbb[0,:,:]*1. / shape[1]
+	charbb[1,:,:] = charbb[1,:,:]*1. / shape[0]
+
 	label = [1 for i in range(numofbox)]
 	shape = list(shape)
-	return image_data, shape, charbb, label, imname
+
+	return image_data, shape, charbb, bbox, label, imname
 
 
 def run():
@@ -84,9 +113,9 @@ def run():
 			charbb = charBB[0,j]
 			imname = imnames[0,j][0]
 			#print str(i) + imname
-			image_data, shape, bbox, label ,imname= _processing_image(charbb, imname,coder)
+			image_data, shape, charbb, bbox, label ,imname= _processing_image(charbb, imname,coder)
 
-			example = _convert_to_example(image_data, shape, bbox, label, imname)
+			example = _convert_to_example(image_data, shape, charbb, bbox, label, imname)
 			tfrecord_writer.write(example.SerializeToString())  
 	print 'Transform to tfrecord finished'
 

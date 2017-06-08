@@ -40,7 +40,7 @@ _B_MEAN = 104.
 
 # Some training pre-processing parameters.
 BBOX_CROP_OVERLAP = 0.5      # Minimum overlap to keep a bbox after cropping.
-CROP_RATIO_RANGE = (0.3, 2.0)  # Distortion ratio during cropping.
+CROP_RATIO_RANGE = (0.8, 1.2)  # Distortion ratio during cropping.
 EVAL_SIZE = (512, 512)
 OBJECT_COVERED = [0.1,0.3,0.5,0.7,0.9]
 
@@ -57,8 +57,9 @@ def get_boxes():
 def distorted_bounding_box_crop(image,
                                 labels,
                                 bboxes,
+                                cord,
                                 min_object_covered=0.1,
-                                aspect_ratio_range=(0.3, 2.0),
+                                aspect_ratio_range=(0.8, 1.2),
                                 area_range=(0.1, 1.0),
                                 max_attempts=200,
                                 scope=None):
@@ -81,7 +82,7 @@ def distorted_bounding_box_crop(image,
     Returns:
         A tuple, a 3-D Tensor cropped_image and the distorted bbox
     """
-    with tf.name_scope(scope, 'distorted_bounding_box_crop', [image, bboxes]):
+    with tf.name_scope(scope, 'distorted_bounding_box_crop', [image, bboxes,cord]):
         # Each bounding box has shape [1, num_boxes, box coords] and
         # the coordinates are ordered [ymin, xmin, ymax, xmax].
 
@@ -100,13 +101,14 @@ def distorted_bounding_box_crop(image,
 
         # Update bounding boxes: resize and filter out.
         bboxes = tfe.bboxes_resize(distort_bbox, bboxes)
-        labels, bboxes, num = tfe.bboxes_filter_overlap(labels, bboxes,
+        cord   = tfe.polybox_resize(distort_bbox, cord)
+        labels, bboxes, cord, num = tfe.bboxes_filter_overlap(labels, bboxes,cord,
                                                    BBOX_CROP_OVERLAP)
-        return cropped_image, labels, bboxes, distort_bbox,num
+        return cropped_image, labels, bboxes, cord, distort_bbox,num
 
 
-def preprocess_for_train(image, labels, bboxes,
-                         out_shape, data_format='NHWC',use_whiten=True,
+def preprocess_for_train(image, labels, bboxes, cord,
+                         out_shape, data_format='NHWC',
                          scope='textbox_process_train'):
     """Preprocesses the given image for training.
     Args:
@@ -119,52 +121,58 @@ def preprocess_for_train(image, labels, bboxes,
         A preprocessed image.
     """
 
-    with tf.name_scope(scope, 'textbox_process_train', [image, labels, bboxes]):
+    with tf.name_scope(scope, 'textbox_process_train', [image, labels, bboxes, cord]):
         if image.get_shape().ndims != 3:
             raise ValueError('Input must be of size [height, width, C>0]')
 
-        
         # Convert to float scaled [0, 1].
-        if image.dtype != tf.float32:
-            image = tf.image.convert_image_dtype(image, dtype=tf.float32)
+        image = tf.to_float(image)
         num = tf.reduce_sum(tf.cast(labels, tf.int32))
+        bboxes = tf.minimum(bboxes, 1.0)
+        bboxes = tf.maximum(bboxes, 0.0)
     
-        #image, boxes = zoom_out(image, boxes)
-        # Distort image and bounding boxes.
-        object_covered = np.random.randint(5)
-        min_object_covered = OBJECT_COVERED[object_covered]
-        image, labels, bboxes, distort_bbox ,num= \
-            distorted_bounding_box_crop(image, labels, bboxes,
-                                        aspect_ratio_range=CROP_RATIO_RANGE)
-        
-        # Resize image to output size.
-        
-        dst_image = tf_image.resize_image(image, out_shape,
-                                          method=tf.image.ResizeMethod.BILINEAR,
+        def update0(image=image, out_shape=out_shape,labels=labels,bboxes=bboxes, cord=cord):
+            #image = tf_image.tf_image_whitened(image, [_R_MEAN, _G_MEAN, _B_MEAN])
+            image = tf_image.resize_image(image, out_shape,
+                                          method=tf.image.ResizeMethod.BICUBIC,
                                           align_corners=False)
-        tf.image.tf_summary_image(dst_image, bboxes, 'image_shape_distorted')
+            image.set_shape([out_shape[0], out_shape[1], 3])           
+            return image, labels, bboxes,cord
+
+        def update1(image=image, out_shape=out_shape,labels=labels,bboxes=bboxes, cord=cord):
+            image, labels, bboxes, cord, distort_bbox, num= \
+                distorted_bounding_box_crop(image, labels, bboxes, cord,
+                                            min_object_covered=0.1,
+                                            aspect_ratio_range=CROP_RATIO_RANGE)
         
-        
-        dst_image = tf_image.apply_with_random_selector(
-                dst_image,
-                lambda x, ordering: tf_image.distort_color_2(x, ordering, False),
+            # Resize image to output size.
+            image = tf_image.apply_with_random_selector(
+                image,
+                lambda x, method: tf.image.resize_images(x, out_shape, tf.image.ResizeMethod.BICUBIC),
                 num_cases=4)
-        
-        # Rescale to normal range
-        
-        image = dst_image *255
-        image.set_shape([out_shape[0], out_shape[1], 3])
-        if use_whiten:
-            image = tf_image.tf_image_whitened(image, [_R_MEAN, _G_MEAN, _B_MEAN])
-            image = image/255.0
+            image.set_shape([out_shape[0], out_shape[1], 3])
+            
+            image = image/255.
+            image = tf_image.apply_with_random_selector(
+                    image,
+                    lambda x, ordering: tf_image.distort_color_2(x, ordering, True),
+                    num_cases=4)
+            image = tf.clip_by_value(image, -1.5, 1.5)
+            return image, labels, bboxes, cord
 
-        return image, labels, bboxes,num
+        object_covered=tf.random_uniform([], minval=0, maxval=10, dtype=tf.int32, seed=None, name=None)
+        image, labels,bboxes ,cord = tf.cond(tf.greater(object_covered,tf.constant(4)), update0, update1)
+
+        num = tf.reduce_sum(tf.cast(labels, tf.int32))
+        tf_image.tf_summary_image(image, bboxes)
+
+        return image, labels, bboxes, cord, num
 
 
-def preprocess_for_eval(image, labels, bboxes,
-                        out_shape=EVAL_SIZE, data_format='NHWC',use_whiten = True,
-                        difficults=None, resize=Resize.WARP_RESIZE,
-                        scope='ssd_preprocessing_train'):
+def preprocess_for_eval(image, labels, bboxes, cord,
+                        out_shape=EVAL_SIZE, data_format='NHWC',
+                        resize=Resize.WARP_RESIZE,
+                        scope='txt_preprocessing_train'):
     """Preprocess an image for evaluation.
 
     Args:
@@ -192,51 +200,23 @@ def preprocess_for_eval(image, labels, bboxes,
         else:
             bboxes = tf.concat([bbox_img, bboxes], axis=0)
 
-        if resize == Resize.NONE:
-            # No resizing...
-            pass
-        elif resize == Resize.CENTRAL_CROP:
-            # Central cropping of the image.
-            image, bboxes = tf_image.resize_image_bboxes_with_crop_or_pad(
-                image, bboxes, out_shape[0], out_shape[1])
-        elif resize == Resize.PAD_AND_RESIZE:
-            # Resize image first: find the correct factor...
-            shape = tf.shape(image)
-            factor = tf.minimum(tf.to_double(1.0),
-                                tf.minimum(tf.to_double(out_shape[0] / shape[0]),
-                                           tf.to_double(out_shape[1] / shape[1])))
-            resize_shape = factor * tf.to_double(shape[0:2])
-            resize_shape = tf.cast(tf.floor(resize_shape), tf.int32)
 
-            image = tf_image.resize_image(image, resize_shape,
-                                          method=tf.image.ResizeMethod.BILINEAR,
-                                          align_corners=False)
-            # Pad to expected size.
-            image, bboxes = tf_image.resize_image_bboxes_with_crop_or_pad(
-                image, bboxes, out_shape[0], out_shape[1])
-        elif resize == Resize.WARP_RESIZE:
-            # Warp resize of the image.
-            image = tf_image.resize_image(image, out_shape,
-                                          method=tf.image.ResizeMethod.BILINEAR,
-                                          align_corners=False)
-
+        image = tf_image.resize_image(image, out_shape,
+                                      method=tf.image.ResizeMethod.BILINEAR,
+                                    align_corners=False)
+        image = tf.clip_by_value(image, -1.5, 1.5)
         # Split back bounding boxes.
         bbox_img = bboxes[0]
         bboxes = bboxes[1:]
-        # Remove difficult boxes.
-        if difficults is not None:
-            mask = tf.logical_not(tf.cast(difficults, tf.bool))
-            labels = tf.boolean_mask(labels, mask)
-            bboxes = tf.boolean_mask(bboxes, mask)
         # Image data format.
-        if use_whiten:
-            image = tf_image.tf_image_whitened(image, [_R_MEAN, _G_MEAN, _B_MEAN])
-            image = image/255.0
-        return image, labels, bboxes, bbox_img, num
+
+
+        return image, labels, bboxes, cord, bbox_img, num
 
 def preprocess_image(image,
                      labels,
                      bboxes,
+                     cord,
                      out_shape,
                      use_whiten = True,
                      is_training=False,
@@ -253,9 +233,9 @@ def preprocess_image(image,
       A preprocessed image.
     """
     if is_training:
-        return preprocess_for_train(image, labels, bboxes,use_whiten=use_whiten,
+        return preprocess_for_train(image, labels, bboxes,cord,
                                     out_shape=out_shape)
     else:
-        return preprocess_for_eval(image, labels, bboxes,use_whiten=use_whiten,
+        return preprocess_for_eval(image, labels, bboxes,cord,
                                    out_shape=out_shape,
                                    **kwargs)
