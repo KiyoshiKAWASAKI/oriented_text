@@ -393,7 +393,7 @@ def distort_color_2(image, color_ordering=0, fast_mode=True, scope=None):
             else:
                 raise ValueError('color_ordering must be in [0, 3]')
         # The random_* ops do not necessarily clamp.
-        return tf.clip_by_value(image, 0.0, 1.0)
+        return image
 
 def tf_summary_image(image, bboxes, name='image', unwhitened=False):
     """Add image with bounding boxes to summary.

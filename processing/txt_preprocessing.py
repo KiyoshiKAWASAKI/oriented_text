@@ -133,10 +133,12 @@ def preprocess_for_train(image, labels, bboxes, cord,
     
         def update0(image=image, out_shape=out_shape,labels=labels,bboxes=bboxes, cord=cord):
             #image = tf_image.tf_image_whitened(image, [_R_MEAN, _G_MEAN, _B_MEAN])
-            image = tf_image.resize_image(image, out_shape,
-                                          method=tf.image.ResizeMethod.BICUBIC,
-                                          align_corners=False)
-            image.set_shape([out_shape[0], out_shape[1], 3])           
+            image = tf_image.apply_with_random_selector(
+                            image,
+                            lambda x, method: tf.image.resize_images(x, out_shape, method),
+                            num_cases=4)
+            image.set_shape([out_shape[0], out_shape[1], 3])  
+            image = image / 255.        
             return image, labels, bboxes,cord
 
         def update1(image=image, out_shape=out_shape,labels=labels,bboxes=bboxes, cord=cord):
@@ -148,7 +150,7 @@ def preprocess_for_train(image, labels, bboxes, cord,
             # Resize image to output size.
             image = tf_image.apply_with_random_selector(
                 image,
-                lambda x, method: tf.image.resize_images(x, out_shape, tf.image.ResizeMethod.BICUBIC),
+                lambda x, method: tf.image.resize_images(x, out_shape, method),
                 num_cases=4)
             image.set_shape([out_shape[0], out_shape[1], 3])
             
@@ -157,22 +159,21 @@ def preprocess_for_train(image, labels, bboxes, cord,
                     image,
                     lambda x, ordering: tf_image.distort_color_2(x, ordering, True),
                     num_cases=4)
-            image = tf.clip_by_value(image, -1.5, 1.5)
+            #image = tf.clip_by_value(image, -1.5, 1.5)
             return image, labels, bboxes, cord
 
         object_covered=tf.random_uniform([], minval=0, maxval=10, dtype=tf.int32, seed=None, name=None)
         image, labels,bboxes ,cord = tf.cond(tf.greater(object_covered,tf.constant(4)), update0, update1)
 
         num = tf.reduce_sum(tf.cast(labels, tf.int32))
-        tf_image.tf_summary_image(image, bboxes)
+        tf_image.tf_summary_image(image, bboxes,'image_with_bboxes')
 
         return image, labels, bboxes, cord, num
 
 
 def preprocess_for_eval(image, labels, bboxes, cord,
-                        out_shape=EVAL_SIZE, data_format='NHWC',
-                        resize=Resize.WARP_RESIZE,
-                        scope='txt_preprocessing_train'):
+                        out_shape, data_format='NHWC',
+                        scope='txt_preprocessing_test'):
     """Preprocess an image for evaluation.
 
     Args:
@@ -204,14 +205,10 @@ def preprocess_for_eval(image, labels, bboxes, cord,
         image = tf_image.resize_image(image, out_shape,
                                       method=tf.image.ResizeMethod.BILINEAR,
                                     align_corners=False)
-        image = tf.clip_by_value(image, -1.5, 1.5)
-        # Split back bounding boxes.
-        bbox_img = bboxes[0]
-        bboxes = bboxes[1:]
-        # Image data format.
+        image.set_shape([out_shape[0], out_shape[1], 3])  
+        image = image / 255.
 
-
-        return image, labels, bboxes, cord, bbox_img, num
+        return image, labels, bboxes, cord, num
 
 def preprocess_image(image,
                      labels,

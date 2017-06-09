@@ -35,7 +35,7 @@ class TextboxNet(object):
 		num_classes=2,
 		feat_layers=['conv4', 'conv7', 'conv8', 'conv9', 'conv10', 'conv11'],
 		feat_shapes=[(64, 64), (32, 32), (16, 16), (8, 8), (4, 4), (2, 2)],
-		normalization=[20, -1, -1, -1, -1, -1],
+		normalizations=[20, -1, -1, -1, -1, -1],
 		gamma=1.5
 		)
 
@@ -76,20 +76,20 @@ class TextboxNet(object):
 		return ssd_arg_scope(weight_decay, data_format=data_format)
 
 
-	def anchors(self, img_shape, dtype=np.float32):
+	def anchors(self, dtype=np.float32):
 		"""Compute the default anchor boxes, given an image shape.
 		"""
-		return textbox_common.textbox_achor_all_layers(img_shape,
+		return textbox_common.textbox_anchor_all_layers(self.params.img_shape,
 									  self.params.feat_shapes,
-									  self.gamma,
+									  self.params.gamma,
+									  0.5,
 									  dtype)
 
-	def bboxes_encode(self, bboxes, anchors, num,
+	def bboxes_encode(self, cord, anchors, num,
 					  scope='text_bboxes_encode'):
+		"""Econde the groudtruth Lables, offsets and links
 		"""
-		Encode labels and bounding boxes.
-		"""
-		#TODO
+		return textbox_common.tf_text_bboxes_encode(cord, anchors, num,)
 
 	def bboxes_decode(self, feat_localizations, anchors, scope='ssd_bboxes_decode'):
 		"""
@@ -107,7 +107,7 @@ class TextboxNet(object):
 		# TODO
 
 
-	def losses(self, logits, localisations,linkslogits
+	def losses(self, logits, localisations,linkslogits,
 			   glocalisations, gscores, glinks,
 			   negative_ratio=3.,
 			   use_hard_neg=True,
@@ -119,7 +119,6 @@ class TextboxNet(object):
 		"""
 		return text_losses(logits, localisations, linkslogits,
 						  glocalisations, gscores, glinks,
-						  use_hard_neg=use_hard_neg,
 						  negative_ratio=negative_ratio,
 						  alpha1=alpha1,
 						  alpha2=alpha2,
@@ -215,7 +214,7 @@ def conv2d(inputs, out, kernel_size, scope,stride=1,activation_fn=tf.nn.relu,
 			padding = 'SAME',rate = 1,use_batch=False, batch_norm_params={}):
 	if use_batch:
 		net = slim.conv2d(inputs, out, kernel_size, stride=stride ,scope=scope, normalizer_fn=slim.batch_norm, 
-			  normalizer_params=batch_norm_params, activation_fn=activation_fn ,padding = padding, rate = rate)
+			  normalizer_params=batch_norm_params, activation_fn=None ,padding = padding, rate = rate)
 	else:
 		net = slim.conv2d(inputs, out, kernel_size, stride=stride, scope=scope, activation_fn=activation_fn,padding = padding, rate=rate)
 	return net
@@ -231,7 +230,7 @@ def text_multibox_layer(layer,
 	"""
 	batch_norm_params = {
 	  # Decay for the moving averages.
-	  'decay': 0.9990,
+	  'decay': 0.9997,
 	  # epsilon to prevent 0s in variance.
 	  'epsilon': 0.001,
 	  'is_training': is_training
@@ -261,7 +260,7 @@ def text_multibox_layer(layer,
 	# links prediction.
 	scores_pred = 12 *  num_classes
 	links_pred = conv2d(net, scores_pred, [3, 3], activation_fn=None, padding = 'SAME',
-						   scope='conv_cls',use_batch=use_batch, batch_norm_params=batch_norm_params)
+						   scope='conv_link',use_batch=use_batch, batch_norm_params=batch_norm_params)
 
 	links_pred = tf.reshape(links_pred, tensor_shape(links_pred, 4)[:-1] + [12,num_classes])
 	return sco_pred, loc_pred, links_pred
@@ -317,7 +316,6 @@ def ssd_arg_scope(weight_decay=0.0005, data_format='NHWC'):
 # =========================================================================== #
 def text_losses(logits, localisations, linkslogits,
 			   glocalisations, gscores, glinks,
-			   use_hard_neg=True,
 			   negative_ratio=3.,
 			   alpha1=1.,
 			   alpha2=1.,
@@ -333,8 +331,8 @@ def text_losses(logits, localisations, linkslogits,
 		for i in range(len(logits)):
 			alllogits.append(tf.reshape(logits[i], [-1, 2]))
 			allgscores.append(tf.reshape(gscores[i], [-1]))
-			allglinks.append(tf.reshape(glinks[i], [-1]))
-			alllinkslogits.append(tf.reshape(linkslogits, [-1,2]))
+			allglinks.append(tf.reshape(glinks[i], [-1,12]))
+			alllinkslogits.append(tf.reshape(linkslogits[i], [-1,12,2]))
 			allglocalization.append(tf.reshape(glocalisations[i], [-1,5]))
 			alllocalization.append(tf.reshape(localisations[i], [-1,5]))
 
@@ -351,7 +349,7 @@ def text_losses(logits, localisations, linkslogits,
 		num = tf.ones_like(allgscores)
 		n = tf.reduce_sum(num)
 		fpmask = tf.cast(pmask , tf.float32)
-		nmask = tf.cast(1.- allgscores, tf.bool)
+		nmask = tf.cast(1- allgscores, tf.bool)
 
 		## segment score loss
 		loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=alllogits,labels=ipmask)
@@ -369,7 +367,7 @@ def text_losses(logits, localisations, linkslogits,
 		cross_neg = tf.losses.compute_weighted_loss(loss, fnmask)
 
 		## localization loss
-		weights = tf.expand_dims(alpha * fpmask, axis=-1)
+		weights = tf.expand_dims(fpmask, axis=-1)
 		l_loc = custom_layers.abs_smooth(alllocalization - allglocalization)
 		l_loc = tf.losses.compute_weighted_loss(l_loc, weights)
 
@@ -378,10 +376,10 @@ def text_losses(logits, localisations, linkslogits,
 		pmask_l = tf.cast(allglinks, tf.bool)
 		ipmask_l = tf.cast(pmask_l, tf.int32)
 		n_pos_l = tf.reduce_sum(ipmask_l)+1
-		num_l = tf.ones_like(pmask_l)
+		num_l = tf.ones_like(ipmask_l)
 		n_l = tf.reduce_sum(num_l)
 		fpmask_l = tf.cast(pmask_l , tf.float32)
-		nmask_l = tf.cast(1.- allglinks, tf.bool)
+		nmask_l = tf.cast(1- allglinks, tf.bool)
 
 		loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=alllinkslogits,labels=ipmask_l)
 		l_cross_pos = tf.losses.compute_weighted_loss(loss, fpmask_l)
